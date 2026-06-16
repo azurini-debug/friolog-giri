@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Carica Giri — Friolog{% endblock %}
+{% block content %}
+<h1>📂 Carica file giri</h1>
+
+<div class="card">
+  <p style="margin-bottom:1rem;color:var(--gray-600);font-size:.9rem;">
+    Seleziona uno o più file <strong>.xls</strong> esportati da AS400 (uno per giro).
+    Se un giro è già stato caricato oggi, verrà sovrascritto.
+  </p>
+  <form method="POST" enctype="multipart/form-data">
+    <div style="margin-bottom:1rem;">
+      <label for="files">File XLS (puoi selezionarne più di uno)</label>
+      <input type="file" id="files" name="files" accept=".xls" multiple required>
+    </div>
+    <button type="submit" class="btn btn-primary">Carica file</button>
+    <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline" style="margin-left:.5rem;">Annulla</a>
+  </form>
+</div>
+
+<div class="card" style="background:var(--gray-50);">
+  <h2>📋 Formato atteso</h2>
+  <p style="font-size:.85rem;color:var(--gray-600);line-height:1.6;">
+    Il file deve essere in formato SpreadsheetML (.xls) generato dall'AS400 con le colonne:<br>
+    <strong>A</strong> Sequenza · <strong>B</strong> Ragione sociale · <strong>C</strong> Indirizzo ·
+    <strong>D</strong> Città · <strong>E</strong> Provincia · <strong>G</strong> Codice cliente ·
+    <strong>H</strong> Telefono · <strong>I</strong> N° Giro · <strong>J</strong> Note consegna
+  </p>
+</div>
+{% endblock %}

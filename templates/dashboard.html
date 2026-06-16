@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Friolog{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem;">
+  <h1 style="margin:0;">📋 Dashboard — {{ oggi.strftime('%d/%m/%Y') }}</h1>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+    <a href="{{ url_for('admin_upload') }}" class="btn btn-primary">+ Carica file</a>
+    <a href="{{ url_for('admin_export') }}" class="btn btn-success">⬇ Export confermati</a>
+    <a href="{{ url_for('admin_export_all') }}" class="btn btn-outline">⬇ Export tutti</a>
+  </div>
+</div>
+
+{% if not giri %}
+<div class="card" style="text-align:center;padding:2.5rem;">
+  <div style="font-size:2.5rem;margin-bottom:.5rem;">📭</div>
+  <p style="color:var(--gray-600);">Nessun giro caricato per oggi.<br>
+  <a href="{{ url_for('admin_upload') }}">Carica i file XLS</a> per iniziare.</p>
+</div>
+{% else %}
+
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-bottom:1.5rem;">
+  {% set completati = giri|selectattr('completato','eq',1)|list|length %}
+  {% set totale = giri|length %}
+  <div class="card" style="text-align:center;">
+    <div style="font-size:2rem;font-weight:700;color:var(--blue);">{{ totale }}</div>
+    <div style="color:var(--gray-600);font-size:.85rem;">Giri totali</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:2rem;font-weight:700;color:var(--green);">{{ completati }}</div>
+    <div style="color:var(--gray-600);font-size:.85rem;">Confermati dagli autisti</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:2rem;font-weight:700;color:{{ 'var(--orange)' if totale-completati > 0 else 'var(--green)' }};">{{ totale - completati }}</div>
+    <div style="color:var(--gray-600);font-size:.85rem;">In attesa</div>
+  </div>
+</div>
+
+{% for giro in giri %}
+<div class="card">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem;">
+    <div>
+      <strong style="font-size:1.05rem;">Giro {{ giro.numero_giro }}</strong>
+      {% if giro.completato %}
+        <span class="badge badge-green" style="margin-left:.5rem;">✓ Confermato</span>
+      {% else %}
+        <span class="badge badge-yellow" style="margin-left:.5rem;">⏳ In attesa</span>
+      {% endif %}
+      <div style="font-size:.82rem;color:var(--gray-600);margin-top:.25rem;">
+        {{ giro.n_clienti }} clienti
+        {% if giro.autista %} · Autista: <strong>{{ giro.autista }}</strong>{% endif %}
+        {% if giro.telefono %} · 📞 {{ giro.telefono }}{% endif %}
+      </div>
+    </div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;">
+      {% if giro.wa_link %}
+      <a href="{{ giro.wa_link }}" target="_blank" class="btn btn-wa btn-sm">📲 WhatsApp</a>
+      {% endif %}
+      <a href="{{ giro.link_giro }}" target="_blank" class="btn btn-outline btn-sm">👁 Anteprima</a>
+    </div>
+  </div>
+
+  <!-- Link da copiare -->
+  <div style="margin-bottom:.75rem;">
+    <label style="margin-bottom:.25rem;">Link per l'autista</label>
+    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+      <span class="link-copy" id="link-{{ loop.index }}">{{ giro.link_giro }}</span>
+      <button class="btn btn-sm btn-outline"
+              onclick="copiaLink('link-{{ loop.index }}', this)">📋 Copia</button>
+    </div>
+  </div>
+
+  <!-- Form autista/telefono -->
+  {% if not giro.completato %}
+  <details style="margin-top:.5rem;">
+    <summary style="cursor:pointer;font-size:.82rem;color:var(--gray-600);">
+      ✏️ Imposta autista e telefono
+    </summary>
+    <form method="POST" action="/admin/giro/{{ giro.id }}/autista"
+          style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;">
+      <input type="text" name="autista" placeholder="Nome autista"
+             value="{{ giro.autista or '' }}" style="flex:1;min-width:140px;">
+      <input type="text" name="telefono" placeholder="Es. 3481234567"
+             value="{{ giro.telefono or '' }}" style="flex:1;min-width:130px;">
+      <button type="submit" class="btn btn-primary btn-sm">Salva</button>
+    </form>
+  </details>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% endif %}
+
+<script>
+function copiaLink(elId, btn) {
+  const testo = document.getElementById(elId).textContent;
+  navigator.clipboard.writeText(testo).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copiato!';
+    setTimeout(() => btn.textContent = orig, 2000);
+  });
+}
+</script>
+{% endblock %}
