@@ -1,7 +1,6 @@
 import os
 import uuid
 import secrets
-import sqlite3
 import csv
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
@@ -12,7 +11,10 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+import urllib.parse
 import io
+import psycopg2
+import psycopg2.extras
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -22,21 +24,19 @@ app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
 ADMIN_PASSWORD_HASH = os.environ.get(
     "ADMIN_PASSWORD_HASH",
-    generate_password_hash("changeme")   # Cambiare in produzione via env var
+    generate_password_hash("changeme")
 )
 
-ALLOWED_EXTENSIONS = {"xls"}
-DATABASE = os.path.join(app.instance_path, "friolog.db")
-os.makedirs(app.instance_path, exist_ok=True)
-
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # ---------------------------------------------------------------------------
-# Database helpers
+# Database helpers (PostgreSQL)
 # ---------------------------------------------------------------------------
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
-        g.db.row_factory = sqlite3.Row
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        conn.autocommit = False
+        g.db = conn
     return g.db
 
 
@@ -44,38 +44,72 @@ def get_db():
 def close_db(exc=None):
     db = g.pop("db", None)
     if db is not None:
+        if exc:
+            db.rollback()
         db.close()
+
+
+def query(sql, params=(), fetchone=False, fetchall=False, commit=False):
+    db = get_db()
+    with db.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        result = None
+        if fetchone:
+            result = cur.fetchone()
+        elif fetchall:
+            result = cur.fetchall()
+        if commit:
+            db.commit()
+        return result
+
+
+def execute(sql, params=(), commit=False):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(sql, params)
+        if commit:
+            db.commit()
+
+
+def execute_returning(sql, params=()):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(sql, params)
+        result = cur.fetchone()
+        db.commit()
+        return result
 
 
 def init_db():
     db = get_db()
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS giri (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero_giro TEXT    NOT NULL,
-            data_giro   DATE    NOT NULL,
-            token       TEXT    NOT NULL UNIQUE,
-            autista     TEXT,
-            telefono    TEXT,
-            completato  INTEGER NOT NULL DEFAULT 0,
-            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+    with db.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS giri (
+                id          SERIAL PRIMARY KEY,
+                numero_giro TEXT    NOT NULL,
+                data_giro   DATE    NOT NULL,
+                token       TEXT    NOT NULL UNIQUE,
+                autista     TEXT,
+                telefono    TEXT,
+                completato  INTEGER NOT NULL DEFAULT 0,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
-        CREATE TABLE IF NOT EXISTS consegne (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            giro_id       INTEGER NOT NULL REFERENCES giri(id) ON DELETE CASCADE,
-            seq_originale INTEGER NOT NULL,
-            seq_autista   INTEGER,
-            ragione_soc   TEXT    NOT NULL,
-            indirizzo     TEXT,
-            citta         TEXT,
-            provincia     TEXT,
-            codice_cliente TEXT   NOT NULL,
-            telefono_cl   TEXT,
-            note          TEXT
-        );
-    """)
-    db.commit()
+            CREATE TABLE IF NOT EXISTS consegne (
+                id             SERIAL PRIMARY KEY,
+                giro_id        INTEGER NOT NULL REFERENCES giri(id) ON DELETE CASCADE,
+                seq_originale  INTEGER NOT NULL,
+                seq_autista    INTEGER,
+                ragione_soc    TEXT    NOT NULL,
+                indirizzo      TEXT,
+                citta          TEXT,
+                provincia      TEXT,
+                codice_cliente TEXT    NOT NULL,
+                telefono_cl    TEXT,
+                note           TEXT
+            );
+        """)
+        db.commit()
 
 
 with app.app_context():
@@ -95,26 +129,12 @@ def login_required(f):
 
 
 # ---------------------------------------------------------------------------
-# XLS parser (SpreadsheetML format generato da AS400)
+# XLS parser (SpreadsheetML formato AS400)
 # ---------------------------------------------------------------------------
 def parse_xls_as400(filepath):
-    """
-    Colonne attese (0-based):
-      0  seq_originale
-      1  ragione_soc
-      2  indirizzo
-      3  citta
-      4  provincia
-      5  n_colli (non usato nell'output)
-      6  codice_cliente
-      7  telefono_cl
-      8  numero_giro
-      9  note
-    """
     with open(filepath, encoding="iso-8859-15", errors="replace") as f:
         content = f.read()
 
-    # Rimuovi namespace per semplificare il parsing
     content = content.replace(' xmlns="urn:schemas-microsoft-com:office:spreadsheet"', "")
     for prefix in ("ss:", "x:", "o:", "html:"):
         content = content.replace(prefix, "")
@@ -133,7 +153,7 @@ def parse_xls_as400(filepath):
         for cell in row_el.findall("Cell"):
             data = cell.find("Data")
             cells.append(data.text.strip() if data is not None and data.text else "")
-        if len(cells) >= 9 and cells[6]:   # codice_cliente obbligatorio
+        if len(cells) >= 9 and cells[6]:
             rows.append({
                 "seq_originale":  int(cells[0]) if cells[0].isdigit() else 0,
                 "ragione_soc":    cells[1],
@@ -174,20 +194,19 @@ def admin_logout():
 @app.route("/admin")
 @login_required
 def admin_dashboard():
-    db = get_db()
-    giri = db.execute(
+    giri = query(
         """SELECT g.*, COUNT(c.id) as n_clienti
            FROM giri g
            LEFT JOIN consegne c ON c.giro_id = g.id
-           WHERE g.data_giro = ?
+           WHERE g.data_giro = %s
            GROUP BY g.id
            ORDER BY g.numero_giro""",
-        (date.today().isoformat(),)
-    ).fetchall()
+        (date.today(),),
+        fetchall=True
+    )
 
-    # Genera link wa.me per ogni giro non completato
     giri_con_link = []
-    for g_row in giri:
+    for g_row in (giri or []):
         giro = dict(g_row)
         link_giro = url_for("giro_autista", token=giro["token"], _external=True)
         tel = (giro.get("telefono") or "").strip().replace(" ", "").replace("-", "")
@@ -197,7 +216,6 @@ def admin_dashboard():
             f"Ciao! Ecco il link per ordinare le consegne di oggi "
             f"(Giro {giro['numero_giro']}): {link_giro}"
         )
-        import urllib.parse
         wa_link = f"https://wa.me/{tel}?text={urllib.parse.quote(testo)}" if tel else None
         giro["link_giro"] = link_giro
         giro["wa_link"] = wa_link
@@ -218,8 +236,7 @@ def admin_upload():
             flash("Nessun file selezionato.", "warning")
             return redirect(request.url)
 
-        db = get_db()
-        oggi = date.today().isoformat()
+        oggi = date.today()
         nuovi = 0
         errori = []
 
@@ -249,33 +266,35 @@ def admin_upload():
             numero_giro = righe[0]["numero_giro"]
 
             # Elimina giro esistente per oggi (ricaricamento)
-            existing = db.execute(
-                "SELECT id FROM giri WHERE numero_giro=? AND data_giro=?",
-                (numero_giro, oggi)
-            ).fetchone()
+            existing = query(
+                "SELECT id FROM giri WHERE numero_giro=%s AND data_giro=%s",
+                (numero_giro, oggi),
+                fetchone=True
+            )
             if existing:
-                db.execute("DELETE FROM giri WHERE id=?", (existing["id"],))
+                execute("DELETE FROM giri WHERE id=%s", (existing["id"],), commit=True)
 
             token = secrets.token_urlsafe(16)
-            cur = db.execute(
-                "INSERT INTO giri (numero_giro, data_giro, token) VALUES (?,?,?)",
+            row = execute_returning(
+                "INSERT INTO giri (numero_giro, data_giro, token) VALUES (%s,%s,%s) RETURNING id",
                 (numero_giro, oggi, token)
             )
-            giro_id = cur.lastrowid
+            giro_id = row[0]
 
-            for r in righe:
-                db.execute(
-                    """INSERT INTO consegne
-                       (giro_id, seq_originale, ragione_soc, indirizzo, citta,
-                        provincia, codice_cliente, telefono_cl, note)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (giro_id, r["seq_originale"], r["ragione_soc"],
-                     r["indirizzo"], r["citta"], r["provincia"],
-                     r["codice_cliente"], r["telefono_cl"], r["note"])
-                )
+            db = get_db()
+            with db.cursor() as cur:
+                for r in righe:
+                    cur.execute(
+                        """INSERT INTO consegne
+                           (giro_id, seq_originale, ragione_soc, indirizzo, citta,
+                            provincia, codice_cliente, telefono_cl, note)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (giro_id, r["seq_originale"], r["ragione_soc"],
+                         r["indirizzo"], r["citta"], r["provincia"],
+                         r["codice_cliente"], r["telefono_cl"], r["note"])
+                    )
+                db.commit()
             nuovi += 1
-
-        db.commit()
 
         if nuovi:
             flash(f"{nuovi} giro/i caricato/i con successo.", "success")
@@ -288,57 +307,49 @@ def admin_upload():
 
 
 # ---------------------------------------------------------------------------
-# Admin: imposta autista e telefono per un giro
+# Admin: imposta autista e telefono
 # ---------------------------------------------------------------------------
 @app.route("/admin/giro/<int:giro_id>/autista", methods=["POST"])
 @login_required
 def set_autista(giro_id):
     autista = request.form.get("autista", "").strip()
     telefono = request.form.get("telefono", "").strip()
-    db = get_db()
-    db.execute(
-        "UPDATE giri SET autista=?, telefono=? WHERE id=?",
-        (autista, telefono, giro_id)
+    execute(
+        "UPDATE giri SET autista=%s, telefono=%s WHERE id=%s",
+        (autista, telefono, giro_id),
+        commit=True
     )
-    db.commit()
     return redirect(url_for("admin_dashboard"))
 
 
 # ---------------------------------------------------------------------------
-# Admin: download CSV output per AS400
+# Admin: export CSV singolo giro
 # ---------------------------------------------------------------------------
-@app.route("/admin/export")
+@app.route("/admin/giro/<int:giro_id>/export")
 @login_required
-def admin_export():
-    db = get_db()
-    oggi = date.today().isoformat()
-    giri = db.execute(
-        "SELECT id, numero_giro FROM giri WHERE data_giro=? AND completato=1",
-        (oggi,)
-    ).fetchall()
+def export_giro(giro_id):
+    giro = query("SELECT * FROM giri WHERE id=%s", (giro_id,), fetchone=True)
+    if giro is None:
+        abort(404)
+
+    consegne = query(
+        """SELECT COALESCE(seq_autista, seq_originale) as seq,
+                  codice_cliente, ragione_soc
+           FROM consegne WHERE giro_id=%s
+           ORDER BY COALESCE(seq_autista, seq_originale)""",
+        (giro_id,),
+        fetchall=True
+    )
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
     writer.writerow(["GIRO", "SEQ_AUTISTA", "CODICE_CLIENTE", "RAGIONE_SOCIALE"])
-
-    for giro in giri:
-        consegne = db.execute(
-            """SELECT seq_autista, codice_cliente, ragione_soc
-               FROM consegne
-               WHERE giro_id=? AND seq_autista IS NOT NULL
-               ORDER BY seq_autista""",
-            (giro["id"],)
-        ).fetchall()
-        for c in consegne:
-            writer.writerow([
-                giro["numero_giro"],
-                c["seq_autista"],
-                c["codice_cliente"],
-                c["ragione_soc"]
-            ])
+    for c in (consegne or []):
+        writer.writerow([giro["numero_giro"], c["seq"], c["codice_cliente"], c["ragione_soc"]])
 
     output.seek(0)
-    filename = f"sequenze_{oggi}.csv"
+    oggi_fname = date.today().strftime("%Y%m%d")
+    filename = f"sequenza_giro{giro['numero_giro']}_{oggi_fname}.csv"
     return send_file(
         io.BytesIO(output.getvalue().encode("utf-8-sig")),
         mimetype="text/csv",
@@ -348,35 +359,85 @@ def admin_export():
 
 
 # ---------------------------------------------------------------------------
-# Admin: export anche giri incompleti (con sequenza originale)
+# Admin: export CSV tutti i giri confermati
+# ---------------------------------------------------------------------------
+@app.route("/admin/export")
+@login_required
+def admin_export():
+    oggi = date.today()
+    oggi_fname = oggi.strftime("%Y%m%d")
+    giri = query(
+        "SELECT id, numero_giro FROM giri WHERE data_giro=%s AND completato=1 ORDER BY numero_giro",
+        (oggi,),
+        fetchall=True
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(["GIRO", "SEQ_AUTISTA", "CODICE_CLIENTE", "RAGIONE_SOCIALE"])
+
+    numeri = []
+    for giro in (giri or []):
+        numeri.append(giro["numero_giro"])
+        consegne = query(
+            """SELECT seq_autista, codice_cliente, ragione_soc
+               FROM consegne WHERE giro_id=%s AND seq_autista IS NOT NULL
+               ORDER BY seq_autista""",
+            (giro["id"],),
+            fetchall=True
+        )
+        for c in (consegne or []):
+            writer.writerow([giro["numero_giro"], c["seq_autista"],
+                             c["codice_cliente"], c["ragione_soc"]])
+
+    output.seek(0)
+    giri_str = "-".join(numeri) if numeri else "nessuno"
+    filename = f"sequenze_giri{giri_str}_{oggi_fname}.csv"
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin: export tutti i giri (anche incompleti)
 # ---------------------------------------------------------------------------
 @app.route("/admin/export_all")
 @login_required
 def admin_export_all():
-    db = get_db()
-    oggi = date.today().isoformat()
-    giri = db.execute(
-        "SELECT id, numero_giro FROM giri WHERE data_giro=?", (oggi,)
-    ).fetchall()
+    oggi = date.today()
+    oggi_fname = oggi.strftime("%Y%m%d")
+    giri = query(
+        "SELECT id, numero_giro FROM giri WHERE data_giro=%s ORDER BY numero_giro",
+        (oggi,),
+        fetchall=True
+    )
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
     writer.writerow(["GIRO", "SEQ", "CODICE_CLIENTE", "RAGIONE_SOCIALE", "CONFERMATO"])
 
-    for giro in giri:
-        consegne = db.execute(
-            """SELECT seq_autista, seq_originale, codice_cliente, ragione_soc
-               FROM consegne WHERE giro_id=? ORDER BY COALESCE(seq_autista, seq_originale)""",
-            (giro["id"],)
-        ).fetchall()
-        for c in consegne:
-            seq = c["seq_autista"] if c["seq_autista"] is not None else c["seq_originale"]
-            confermato = "SI" if c["seq_autista"] is not None else "NO"
-            writer.writerow([giro["numero_giro"], seq, c["codice_cliente"],
-                             c["ragione_soc"], confermato])
+    numeri = []
+    for giro in (giri or []):
+        numeri.append(giro["numero_giro"])
+        consegne = query(
+            """SELECT COALESCE(seq_autista, seq_originale) as seq,
+                      codice_cliente, ragione_soc,
+                      CASE WHEN seq_autista IS NOT NULL THEN 'SI' ELSE 'NO' END as confermato
+               FROM consegne WHERE giro_id=%s
+               ORDER BY COALESCE(seq_autista, seq_originale)""",
+            (giro["id"],),
+            fetchall=True
+        )
+        for c in (consegne or []):
+            writer.writerow([giro["numero_giro"], c["seq"],
+                             c["codice_cliente"], c["ragione_soc"], c["confermato"]])
 
     output.seek(0)
-    filename = f"sequenze_completo_{oggi}.csv"
+    giri_str = "-".join(numeri) if numeri else "tutti"
+    filename = f"sequenze_completo_giri{giri_str}_{oggi_fname}.csv"
     return send_file(
         io.BytesIO(output.getvalue().encode("utf-8-sig")),
         mimetype="text/csv",
@@ -390,17 +451,15 @@ def admin_export_all():
 # ---------------------------------------------------------------------------
 @app.route("/giro/<token>")
 def giro_autista(token):
-    db = get_db()
-    giro = db.execute(
-        "SELECT * FROM giri WHERE token=?", (token,)
-    ).fetchone()
+    giro = query("SELECT * FROM giri WHERE token=%s", (token,), fetchone=True)
     if giro is None:
         abort(404)
 
-    consegne = db.execute(
-        """SELECT * FROM consegne WHERE giro_id=? ORDER BY seq_originale""",
-        (giro["id"],)
-    ).fetchall()
+    consegne = query(
+        "SELECT * FROM consegne WHERE giro_id=%s ORDER BY seq_originale",
+        (giro["id"],),
+        fetchall=True
+    )
 
     return render_template(
         "giro.html",
@@ -410,42 +469,38 @@ def giro_autista(token):
 
 
 # ---------------------------------------------------------------------------
-# API: salva sequenza dell'autista
+# API: salva sequenza autista
 # ---------------------------------------------------------------------------
 @app.route("/api/giro/<token>/salva", methods=["POST"])
 def salva_sequenza(token):
-    db = get_db()
-    giro = db.execute(
-        "SELECT * FROM giri WHERE token=?", (token,)
-    ).fetchone()
+    giro = query("SELECT * FROM giri WHERE token=%s", (token,), fetchone=True)
     if giro is None:
         return jsonify({"ok": False, "msg": "Giro non trovato"}), 404
     if giro["completato"]:
         return jsonify({"ok": False, "msg": "Giro già confermato"}), 400
 
     data = request.get_json(force=True)
-    ordine = data.get("ordine", [])  # lista di codice_cliente in ordine
+    ordine = data.get("ordine", [])
 
     if not ordine:
         return jsonify({"ok": False, "msg": "Ordine vuoto"}), 400
 
-    # Verifica che tutti i clienti del giro siano presenti
-    consegne = db.execute(
-        "SELECT codice_cliente FROM consegne WHERE giro_id=?", (giro["id"],)
-    ).fetchall()
+    consegne = query(
+        "SELECT codice_cliente FROM consegne WHERE giro_id=%s", (giro["id"],), fetchall=True
+    )
     codici_attesi = {c["codice_cliente"] for c in consegne}
-    codici_ricevuti = set(ordine)
-    if codici_attesi != codici_ricevuti:
+    if codici_attesi != set(ordine):
         return jsonify({"ok": False, "msg": "Lista clienti non corrisponde"}), 400
 
-    for seq, codice in enumerate(ordine, start=1):
-        db.execute(
-            """UPDATE consegne SET seq_autista=?
-               WHERE giro_id=? AND codice_cliente=?""",
-            (seq, giro["id"], codice)
-        )
-    db.execute("UPDATE giri SET completato=1 WHERE id=?", (giro["id"],))
-    db.commit()
+    db = get_db()
+    with db.cursor() as cur:
+        for seq, codice in enumerate(ordine, start=1):
+            cur.execute(
+                "UPDATE consegne SET seq_autista=%s WHERE giro_id=%s AND codice_cliente=%s",
+                (seq, giro["id"], codice)
+            )
+        cur.execute("UPDATE giri SET completato=1 WHERE id=%s", (giro["id"],))
+        db.commit()
 
     return jsonify({"ok": True, "msg": "Sequenza salvata con successo!"})
 
