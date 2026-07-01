@@ -222,7 +222,7 @@
 <body>
 
 <header>
-  <span class="brand-mark">Friolog<span class="dot">.it</span></span>
+  <img src="{{ url_for('static', filename='logo-friolog.jpg') }}" alt="Friolog.it" style="height:30px;display:block;">
   <div class="giro-line">Giro {{ giro.numero_giro }}{% if giro.autista %} — {{ giro.autista }}{% endif %}</div>
   <div class="sub">{{ consegne|length }} consegne da ordinare</div>
 </header>
@@ -230,7 +230,7 @@
 {% if giro.completato %}
 <div class="done-banner">
   ✅ Hai già confermato l'ordine di questo giro.<br>
-  <span style="font-weight:400;font-size:.88rem;">Grazie! L'ufficio ha ricevuto la sequenza.</span>
+  <span style="font-weight:400;font-size:.88rem;">Grazie! L'ufficio ha ricevuto la sequenza. Questo link non è più attivo.</span>
 </div>
 {% else %}
 
@@ -265,7 +265,7 @@
   <button class="btn-confirm" id="btnConferma" onclick="conferma()">
     Conferma ordine di scarico
   </button>
-  <div class="footer-hint">🔒 dopo la conferma il link non sarà più attivo</div>
+  <div class="footer-hint">🔒 il link scade dopo la conferma o dopo 12 ore</div>
 </div>
 
 {% endif %}

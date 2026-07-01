@@ -139,7 +139,7 @@
 {% block navbar %}
 <nav>
   <a class="brand" href="{{ url_for('admin_dashboard') }}">
-    <span class="brand-mark">Friolog<span class="dot">.it</span></span>
+    <img src="{{ url_for('static', filename='logo-friolog.jpg') }}" alt="Friolog.it" style="height:34px;display:block;">
   </a>
   {% if session.get('admin_logged_in') %}
     <a href="{{ url_for('admin_dashboard') }}">Giri</a>
