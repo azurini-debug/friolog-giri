@@ -162,6 +162,16 @@ def init_db():
 
                 ALTER TABLE riconoscimenti ADD COLUMN IF NOT EXISTS esito           TEXT;
                 ALTER TABLE riconoscimenti ADD COLUMN IF NOT EXISTS codice_corretto TEXT;
+                ALTER TABLE riconoscimenti ADD COLUMN IF NOT EXISTS letto_ean       TEXT;
+
+                CREATE TABLE IF NOT EXISTS correzioni (
+                    id         SERIAL PRIMARY KEY,
+                    codice     TEXT NOT NULL,
+                    descr_norm TEXT,
+                    ean        TEXT,
+                    conferme   INTEGER NOT NULL DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
 
                 CREATE TABLE IF NOT EXISTS scanner_token (
                     id         SERIAL PRIMARY KEY,
@@ -1014,6 +1024,118 @@ def _merge_letture(letture):
 
 
 # ---------------------------------------------------------------------------
+# Cartoni: memoria delle correzioni
+# Impara dai feedback dell'operatore ("questo prodotto = questo codice") e,
+# quando ripassa un cartone simile, richiama la risposta confermata.
+# ---------------------------------------------------------------------------
+def _solo_cifre(s):
+    import re
+    return re.sub(r'\D', '', s or '')
+
+
+def _descr_tokens_set(s):
+    # token significativi (>=3 char), come insieme ordinato
+    return sorted(set(_tokens(s)))
+
+
+def _overlap(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def _scegli_correzione(read_tokens, read_ean, rows):
+    """Sceglie la correzione memorizzata che meglio corrisponde alla lettura."""
+    best, best_key = None, (0.0, 0)
+    for r in rows:
+        rt = set((r.get("descr_norm") or "").split())
+        r_ean = r.get("ean") or ""
+        if read_ean and r_ean and read_ean == r_ean:
+            score = 1.0
+        else:
+            if len(read_tokens & rt) < 2:      # servono almeno 2 parole in comune
+                continue
+            score = _overlap(read_tokens, rt)
+            if score < 0.6:                    # e una sovrapposizione netta
+                continue
+        key = (score, int(r.get("conferme") or 1))
+        if key > best_key:
+            best, best_key = r, key
+    return best
+
+
+def registra_correzione(codice, descrizione, ean=""):
+    """Salva/rinforza una correzione confermata dall'operatore."""
+    codice = (codice or "").strip()
+    if not codice:
+        return
+    toks = _descr_tokens_set(descrizione)
+    descr_norm = " ".join(toks)
+    ean_n = _solo_cifre(ean)
+    rows = query("SELECT * FROM correzioni WHERE codice=%s", (codice,), fetchall=True) or []
+    best = None
+    for row in rows:
+        if ean_n and (row.get("ean") or "") == ean_n:
+            best = row; break
+        if _overlap(set(toks), set((row.get("descr_norm") or "").split())) >= 0.6:
+            best = row; break
+    if best:
+        union = " ".join(sorted(set(toks) | set((best.get("descr_norm") or "").split())))
+        execute(
+            "UPDATE correzioni SET descr_norm=%s, ean=COALESCE(NULLIF(%s,''), ean), "
+            "conferme=conferme+1, updated_at=NOW() WHERE id=%s",
+            (union, ean_n, best["id"]), commit=True,
+        )
+    else:
+        execute(
+            "INSERT INTO correzioni (codice, descr_norm, ean) VALUES (%s,%s,%s)",
+            (codice, descr_norm, ean_n), commit=True,
+        )
+
+
+def applica_memoria(merged, candidati, confidenza):
+    """Se un cartone simile è già stato confermato, porta quel codice in cima."""
+    toks = set(_descr_tokens_set(merged.get("descrizione", "")))
+    ean_n = _solo_cifre(merged.get("ean", ""))
+    if not toks and not ean_n:
+        return candidati, confidenza
+    rows = query("SELECT codice, descr_norm, ean, conferme FROM correzioni", fetchall=True) or []
+    scelta = _scegli_correzione(toks, ean_n, [dict(r) for r in rows])
+    if not scelta:
+        return candidati, confidenza
+
+    cod = scelta["codice"]
+    conf_n = int(scelta.get("conferme") or 1)
+    motivo = f"già confermato ({conf_n})" if conf_n > 1 else "già confermato"
+
+    trovato = next((c for c in candidati if c["codice"] == cod), None)
+    if trovato:
+        if motivo not in trovato["motivi"]:
+            trovato["motivi"] = [motivo] + trovato["motivi"]
+        candidati = [trovato] + [c for c in candidati if c is not trovato]
+    else:
+        art = query(
+            "SELECT codice, descrizione, data_scadenza, lotto, fornitore "
+            "FROM articoli WHERE codice=%s LIMIT 1",
+            (cod,), fetchone=True,
+        )
+        nuovo = {
+            "codice": cod,
+            "descrizione": (art["descrizione"] if art else "(da correzione confermata)"),
+            "scadenza": (art["data_scadenza"] if art else ""),
+            "lotto": (art["lotto"] if art else ""),
+            "fornitore": (art["fornitore"] if art else ""),
+            "score": 999,
+            "motivi": [motivo],
+        }
+        candidati = [nuovo] + candidati
+
+    candidati = candidati[:3]
+    confidenza = max(confidenza, min(98, 88 + conf_n * 2))
+    return candidati, confidenza
+
+
+# ---------------------------------------------------------------------------
 # Cartoni: motore di identificazione (condiviso) + link operatore a scadenza
 # ---------------------------------------------------------------------------
 def _esegui_identificazione(files):
@@ -1040,16 +1162,18 @@ def _esegui_identificazione(files):
 
     merged = _merge_letture(letture)
     candidati, confidenza = cerca_candidati(merged)
+    candidati, confidenza = applica_memoria(merged, candidati, confidenza)
     proposto = candidati[0]["codice"] if candidati else ""
     ric_id = None
     try:
         row = execute_returning(
             """INSERT INTO riconoscimenti
                (letto_lotto, letto_scadenza, letto_fornitore, letto_descrizione,
-                codice_proposto, confidenza, n_foto)
-               VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                letto_ean, codice_proposto, confidenza, n_foto)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (merged.get("lotto"), merged.get("scadenza"), merged.get("fornitore"),
-             merged.get("descrizione"), proposto, int(confidenza), len(letture)),
+             merged.get("descrizione"), merged.get("ean"), proposto,
+             int(confidenza), len(letture)),
         )
         ric_id = row["id"] if row else None
     except Exception:
@@ -1104,6 +1228,20 @@ def scanner_feedback(token):
         )
     except Exception:
         return jsonify({"ok": False, "msg": "Errore nel salvataggio."}), 500
+
+    # Se conosciamo il codice giusto, impariamolo (memoria delle correzioni)
+    if codice_corretto:
+        try:
+            ric = query(
+                "SELECT letto_descrizione, letto_ean FROM riconoscimenti WHERE id=%s",
+                (ric_id,), fetchone=True,
+            )
+            if ric:
+                registra_correzione(codice_corretto, ric.get("letto_descrizione", ""),
+                                    ric.get("letto_ean", ""))
+        except Exception:
+            pass
+
     return jsonify({"ok": True})
 
 
