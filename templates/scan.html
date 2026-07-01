@@ -52,6 +52,10 @@
     .spinner { text-align:center; color:var(--gray-600); font-size:.9rem; padding:1rem; }
     .err { background:#fee2e2; color:#7f1d1d; border-radius:var(--radius); padding:.75rem; font-size:.9rem; }
     .note { font-size:.82rem; color:var(--amber); margin-top:.5rem; }
+    .btn-sm { padding:.6rem .85rem; font-size:.9rem; border-radius:8px; font-weight:600; cursor:pointer; border:none; }
+    .btn-outline { background:#fff; border:1.5px solid var(--blue); color:var(--blue); }
+    .btn-navy { background:var(--navy); color:#fff; border:none; }
+    .fb-input { flex:1; padding:.6rem; border:1px solid var(--gray-200); border-radius:8px; font-size:1rem; }
   </style>
 </head>
 <body>
@@ -83,6 +87,7 @@
 
 <script>
 let fotos = [];
+let ultimoId = null;
 const thumbs = document.getElementById('thumbs');
 const count = document.getElementById('count');
 const btnGo = document.getElementById('btnGo');
@@ -142,6 +147,7 @@ function mostra(d) {
   const L = d.letto || {};
   const cand = d.candidati || [];
   const r = document.getElementById('risultato');
+  ultimoId = d.id || null;
 
   let html = '<div class="card"><h3 style="font-size:.95rem;margin-bottom:.5rem;color:var(--gray-600);">Letto dall\'etichetta</h3>';
   html += riga('Lotto', L.lotto) + riga('Scadenza', L.scadenza) + riga('Fornitore', L.fornitore) + riga('Descrizione', L.descrizione);
@@ -170,12 +176,57 @@ function mostra(d) {
     html += '</div>';
   }
 
+  if (ultimoId) {
+    let fb = '<div class="card" id="fbCard">';
+    if (cand.length) {
+      fb += '<div style="font-size:.9rem;color:var(--gray-600);margin-bottom:.55rem;">La proposta è corretta?</div>';
+      fb += '<div style="display:flex;gap:.5rem;flex-wrap:wrap;">';
+      fb += `<button class="btn-sm" style="flex:1;min-width:120px;background:var(--green-bg);color:var(--green);" onclick="fb('corretto','${escq(cand[0].codice)}')">✓ Sì, giusto</button>`;
+      fb += `<button class="btn-sm btn-outline" style="flex:1;min-width:120px;" onclick="apriNo()">✗ No / altro</button>`;
+      fb += '</div><div id="fbNo" style="display:none;margin-top:.7rem;">';
+      if (cand.length > 1) {
+        fb += '<div style="font-size:.85rem;color:var(--gray-600);margin-bottom:.4rem;">Era una di queste?</div>';
+        cand.slice(1).forEach(c => {
+          fb += `<button class="btn-sm btn-outline" style="margin:0 .35rem .35rem 0;" onclick="fb('alternativa','${escq(c.codice)}')">${escq(c.codice)}</button>`;
+        });
+      }
+      fb += '<div style="font-size:.85rem;color:var(--gray-600);margin:.5rem 0 .35rem;">Oppure scrivi il codice corretto:</div>';
+    } else {
+      fb += '<div style="font-size:.9rem;color:var(--gray-600);margin-bottom:.4rem;">Nessuna proposta. Se lo conosci, scrivi il codice corretto:</div>';
+    }
+    fb += '<div style="display:flex;gap:.4rem;"><input id="fbCodice" type="text" inputmode="numeric" placeholder="Codice" class="fb-input"><button class="btn-sm btn-navy" onclick="fbManuale()">Invia</button></div>';
+    fb += (cand.length ? '</div>' : '') + '</div>';
+    html += fb;
+  }
+
   html += '<button class="btn btn-reset" onclick="reset()">↺ Nuovo cartone</button>';
   r.innerHTML = html;
 }
 
+function apriNo() {
+  const n = document.getElementById('fbNo');
+  if (n) n.style.display = 'block';
+}
+function fbManuale() {
+  const el = document.getElementById('fbCodice');
+  fb('nessuno', el ? el.value.trim() : '');
+}
+async function fb(esito, codice) {
+  if (!ultimoId) return;
+  try {
+    await fetch('/api/scan/{{ token }}/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: ultimoId, esito: esito, codice_corretto: codice })
+    });
+  } catch (e) {}
+  const c = document.getElementById('fbCard');
+  if (c) c.innerHTML = '<div style="text-align:center;color:var(--green);font-weight:600;padding:.4rem;">✓ Grazie, feedback registrato</div>';
+}
+
 function reset() {
   fotos = [];
+  ultimoId = null;
   render();
   document.getElementById('risultato').innerHTML = '';
   window.scrollTo(0, 0);

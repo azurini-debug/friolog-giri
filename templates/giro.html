@@ -66,7 +66,7 @@
       margin-bottom: .6rem;
       display: flex;
       align-items: stretch;
-      touch-action: none;
+      touch-action: pan-y;
       user-select: none;
       transition: box-shadow .15s, transform .15s;
     }
@@ -81,14 +81,16 @@
     }
 
     .item-handle {
-      padding: .9rem .65rem;
-      color: var(--gray-400);
-      font-size: 1.1rem;
+      padding: .9rem .8rem;
+      color: var(--blue);
+      font-size: 1.5rem;
       cursor: grab;
       display: flex;
       align-items: center;
       border-right: 1px solid var(--gray-100);
       flex-shrink: 0;
+      touch-action: none;
+      background: var(--sky-tint);
     }
     .item-handle:active { cursor: grabbing; }
 
@@ -235,8 +237,9 @@
 {% else %}
 
 <div class="istruzioni">
-  📌 <strong>Trascina</strong> i clienti per mettere in ordine le consegne, poi premi <strong>Conferma</strong>.
-  Tocca ℹ️ per vedere l'indirizzo completo e le note.
+  📌 Tieni premuta la <strong>maniglia ⠿</strong> a sinistra e <strong>trascina</strong> per riordinare le consegne.
+  Scorri l'elenco facendo scorrere il dito sul resto della riga. Poi premi <strong>Conferma</strong>.
+  Tocca ℹ️ per indirizzo e note.
 </div>
 
 <ul id="lista">
@@ -320,9 +323,11 @@ lista.addEventListener('dragover', e => {
   else lista.insertBefore(dragged, target.nextSibling);
 });
 
-// Mobile touch
+// Mobile touch — il drag parte SOLO dalla maniglia (⠿), così altrove si scorre
 lista.addEventListener('touchstart', e => {
-  const item = e.target.closest('.item');
+  const handle = e.target.closest('.item-handle');
+  if (!handle) return;                 // fuori dalla maniglia: lascia scorrere la pagina
+  const item = handle.closest('.item');
   if (!item) return;
   touchItem = item;
   const touch = e.touches[0];
