@@ -155,8 +155,13 @@ def init_db():
                     codice_proposto   TEXT,
                     confidenza        INTEGER,
                     n_foto            INTEGER,
+                    esito             TEXT,
+                    codice_corretto   TEXT,
                     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                ALTER TABLE riconoscimenti ADD COLUMN IF NOT EXISTS esito           TEXT;
+                ALTER TABLE riconoscimenti ADD COLUMN IF NOT EXISTS codice_corretto TEXT;
 
                 CREATE TABLE IF NOT EXISTS scanner_token (
                     id         SERIAL PRIMARY KEY,
@@ -830,8 +835,8 @@ W_LOTTO_DATE  = 42   # il lotto a gestionale coincide con la data (ri-lottatura)
 W_LOTTO_FUZZY = 24
 W_SCAD        = 40
 W_SCAD_MY     = 28   # scadenza letta solo mese/anno
-W_DESCR       = 10
-W_DESCR_MAX   = 30
+W_DESCR       = 12
+W_DESCR_MAX   = 40
 W_FORN        = 16   # conferma: bonus se coincide, MAI penalita' se diverso
 SOGLIA_AFFIDABILE = 85
 
@@ -1036,21 +1041,22 @@ def _esegui_identificazione(files):
     merged = _merge_letture(letture)
     candidati, confidenza = cerca_candidati(merged)
     proposto = candidati[0]["codice"] if candidati else ""
+    ric_id = None
     try:
-        execute(
+        row = execute_returning(
             """INSERT INTO riconoscimenti
                (letto_lotto, letto_scadenza, letto_fornitore, letto_descrizione,
                 codice_proposto, confidenza, n_foto)
-               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (merged.get("lotto"), merged.get("scadenza"), merged.get("fornitore"),
              merged.get("descrizione"), proposto, int(confidenza), len(letture)),
-            commit=True,
         )
+        ric_id = row["id"] if row else None
     except Exception:
         pass
 
     return {
-        "ok": True, "letto": merged, "candidati": candidati,
+        "ok": True, "id": ric_id, "letto": merged, "candidati": candidati,
         "confidenza": confidenza, "soglia": SOGLIA_AFFIDABILE, "n_foto": len(letture),
     }, 200
 
@@ -1078,6 +1084,27 @@ def scanner_identifica(token):
         return jsonify({"ok": False, "msg": "Chiave API non configurata sul server."}), 500
     payload, status = _esegui_identificazione(request.files.getlist("foto"))
     return jsonify(payload), status
+
+
+@app.route("/api/scan/<token>/feedback", methods=["POST"])
+def scanner_feedback(token):
+    if _scanner_token_valido(token) is None:
+        return jsonify({"ok": False, "msg": "Link scaduto o non valido."}), 410
+    data = request.get_json(force=True) or {}
+    ric_id = data.get("id")
+    esito = (data.get("esito") or "").strip()          # 'corretto' | 'alternativa' | 'nessuno'
+    codice_corretto = (data.get("codice_corretto") or "").strip() or None
+    if not ric_id or esito not in ("corretto", "alternativa", "nessuno"):
+        return jsonify({"ok": False, "msg": "Feedback non valido."}), 400
+    try:
+        execute(
+            "UPDATE riconoscimenti SET esito=%s, codice_corretto=%s WHERE id=%s",
+            (esito, codice_corretto, ric_id),
+            commit=True,
+        )
+    except Exception:
+        return jsonify({"ok": False, "msg": "Errore nel salvataggio."}), 500
+    return jsonify({"ok": True})
 
 
 # --- Ufficio: genera un link operatore valido 24 ore ---
