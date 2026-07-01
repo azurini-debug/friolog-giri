@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Cartoni — Friolog{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem;">
+  <h1 style="margin:0;">📦 Cartoni — Archivio articoli</h1>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-bottom:1.25rem;">
+  <div class="card" style="text-align:center;">
+    <div style="font-size:2rem;font-weight:700;color:var(--blue);">{{ n_terne }}</div>
+    <div style="color:var(--gray-600);font-size:.85rem;">Combinazioni lotto/scadenza in archivio</div>
+  </div>
+  {% if ultimo %}
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.15rem;font-weight:700;color:var(--navy);">{{ ultimo.n_articoli }} articoli</div>
+    <div style="color:var(--gray-600);font-size:.8rem;">
+      ultimo caricamento:
+      {{ ultimo.created_at.strftime('%d/%m/%Y %H:%M') if ultimo.created_at else '—' }}
+    </div>
+    <div style="color:var(--gray-400);font-size:.72rem;margin-top:.25rem;word-break:break-all;">{{ ultimo.filename }}</div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Link operatore per lo scanner</h2>
+  <p style="font-size:.85rem;color:var(--gray-600);line-height:1.6;margin-bottom:1rem;">
+    Genera un link da mandare al magazziniere su WhatsApp: lo apre dal telefono e usa lo
+    scanner <strong>senza login</strong>. Il link <strong>scade dopo 24 ore</strong>.
+  </p>
+  <form method="POST" action="{{ url_for('admin_cartoni_genera_link') }}"
+        style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end;">
+    <div style="flex:1;min-width:140px;">
+      <label for="nome">Operatore (facoltativo)</label>
+      <input type="text" id="nome" name="nome" placeholder="Es. Marco">
+    </div>
+    <div style="flex:1;min-width:150px;">
+      <label for="telefono">Telefono WhatsApp (facoltativo)</label>
+      <input type="text" id="telefono" name="telefono" placeholder="Es. 3481234567">
+    </div>
+    <button type="submit" class="btn btn-primary">Genera link 24h</button>
+  </form>
+</div>
+
+{% if links %}
+<div class="card">
+  <h2>Link attivi</h2>
+  {% for l in links %}
+  <div style="border-bottom:1px solid var(--gray-100);padding:.75rem 0;">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">
+      <div style="font-size:.85rem;">
+        {% if l.nome %}<strong>{{ l.nome }}</strong> · {% endif %}
+        <span style="color:var(--gray-600);">scade {{ l.scadenza.strftime('%d/%m %H:%M') if l.scadenza else '' }}</span>
+      </div>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;">
+        {% if l.wa_link %}<a href="{{ l.wa_link }}" target="_blank" class="btn btn-wa btn-sm">📲 WhatsApp</a>{% endif %}
+        <a href="{{ l.url }}" target="_blank" class="btn btn-outline btn-sm">👁 Apri</a>
+        <button class="btn btn-sm btn-outline" onclick="copiaLink('lk-{{ loop.index }}', this)">📋 Copia</button>
+      </div>
+    </div>
+    <span class="link-copy" id="lk-{{ loop.index }}" style="display:inline-block;margin-top:.4rem;">{{ l.url }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Carica il CSV dei movimenti</h2>
+  <p style="margin-bottom:1rem;color:var(--gray-600);font-size:.9rem;line-height:1.6;">
+    Esporta i movimenti dal gestionale e carica qui il file <strong>.csv</strong>.
+    Ogni caricamento <strong>sostituisce</strong> l'archivio precedente con la nuova
+    fotografia dei movimenti — è da rifare quando vuoi aggiornare i dati su cui
+    avvengono gli abbinamenti.
+  </p>
+  <form method="POST" action="{{ url_for('admin_cartoni_upload_csv') }}" enctype="multipart/form-data">
+    <div style="margin-bottom:1rem;">
+      <label for="csv">File CSV movimenti</label>
+      <input type="file" id="csv" name="csv" accept=".csv" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Carica CSV</button>
+  </form>
+</div>
+
+<div class="card" style="background:var(--gray-50);">
+  <h2>Quali colonne servono</h2>
+  <p style="font-size:.85rem;color:var(--gray-600);line-height:1.7;">
+    Il file può avere il numero di colonne che vuoi, in qualsiasi ordine: contano solo
+    le <strong>intestazioni</strong>, non la posizione.<br>
+    Obbligatorie: <strong>Codice Articolo</strong> · <strong>Descrizione Articolo</strong> ·
+    <strong>Data Scadenza</strong> · <strong>Lotto</strong>.<br>
+    Consigliate (migliorano gli abbinamenti): <strong>Data Produzione</strong> ·
+    <strong>Fornitore del Pallet</strong>.<br>
+    Se manca una colonna obbligatoria, il caricamento si ferma e ti dice quale.
+  </p>
+</div>
+
+<script>
+function copiaLink(elId, btn) {
+  const testo = document.getElementById(elId).textContent;
+  navigator.clipboard.writeText(testo).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copiato!';
+    setTimeout(() => btn.textContent = orig, 2000);
+  });
+}
+</script>
+{% endblock %}
