@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Feedback cartoni — Friolog{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1rem;">
+  <h1 style="margin:0;">📊 Controllo feedback</h1>
+  <a href="{{ url_for('admin_cartoni') }}" class="btn btn-outline btn-sm">← Torna a Cartoni</a>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:1rem;margin-bottom:1.25rem;">
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.8rem;font-weight:700;color:var(--navy);">{{ stats.totale or 0 }}</div>
+    <div style="color:var(--gray-600);font-size:.8rem;">riconoscimenti totali</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.8rem;font-weight:700;color:var(--blue);">{{ stats.con_feedback or 0 }}</div>
+    <div style="color:var(--gray-600);font-size:.8rem;">con feedback</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.8rem;font-weight:700;color:var(--green);">{{ stats.corretti or 0 }}</div>
+    <div style="color:var(--gray-600);font-size:.8rem;">proposta giusta</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.8rem;font-weight:700;color:var(--red);">{{ stats.sbagliati or 0 }}</div>
+    <div style="color:var(--gray-600);font-size:.8rem;">proposta sbagliata</div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div style="font-size:1.8rem;font-weight:700;color:var(--navy);">
+      {% if stats.con_feedback and stats.con_feedback > 0 %}
+        {{ ((stats.corretti or 0) * 100 // stats.con_feedback) }}%
+      {% else %}—{% endif %}
+    </div>
+    <div style="color:var(--gray-600);font-size:.8rem;">accuratezza (sul feedback)</div>
+  </div>
+</div>
+
+<div class="card">
+  <p style="font-size:.85rem;color:var(--gray-600);line-height:1.6;margin-bottom:1rem;">
+    Ultimi 200 riconoscimenti. La colonna <strong>Esito</strong> mostra il giudizio dell'operatore:
+    verde = proposta giusta, giallo = era un'alternativa, rosso = nessuna/altro codice.
+    Dove l'operatore ha indicato il codice giusto, lo trovi in <strong>Codice corretto</strong>.
+  </p>
+  <div style="overflow-x:auto;">
+  <table>
+    <thead>
+      <tr>
+        <th>Quando</th>
+        <th>Letto dall'etichetta</th>
+        <th>EAN</th>
+        <th>Proposto</th>
+        <th>Conf.</th>
+        <th>Esito</th>
+        <th>Codice corretto</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in righe %}
+      <tr>
+        <td style="white-space:nowrap;font-size:.78rem;color:var(--gray-600);">
+          {{ r.created_at.strftime('%d/%m %H:%M') if r.created_at else '' }}
+        </td>
+        <td style="max-width:280px;">
+          <div style="font-weight:600;">{{ r.letto_descrizione or '—' }}</div>
+          <div style="font-size:.75rem;color:var(--gray-600);">
+            {% if r.letto_lotto %}lotto {{ r.letto_lotto }}{% endif %}
+            {% if r.letto_scadenza %} · scad {{ r.letto_scadenza }}{% endif %}
+          </div>
+        </td>
+        <td style="font-size:.78rem;color:var(--gray-600);white-space:nowrap;">{{ r.letto_ean or '—' }}</td>
+        <td style="font-weight:700;color:var(--navy);white-space:nowrap;">{{ r.codice_proposto or '—' }}</td>
+        <td style="white-space:nowrap;">
+          {% if r.confidenza is not none %}{{ r.confidenza }}%{% else %}—{% endif %}
+        </td>
+        <td style="white-space:nowrap;">
+          {% if r.esito == 'corretto' %}
+            <span class="badge badge-green">✓ giusto</span>
+          {% elif r.esito == 'alternativa' %}
+            <span class="badge badge-yellow">era alternativa</span>
+          {% elif r.esito == 'nessuno' %}
+            <span class="badge badge-red">nessuno/altro</span>
+          {% else %}
+            <span style="color:var(--gray-400);">—</span>
+          {% endif %}
+        </td>
+        <td style="font-weight:700;color:var(--green);white-space:nowrap;">{{ r.codice_corretto or '' }}</td>
+      </tr>
+      {% endfor %}
+      {% if not righe %}
+      <tr><td colspan="7" style="text-align:center;color:var(--gray-400);padding:1.5rem;">Nessun riconoscimento ancora registrato.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}
